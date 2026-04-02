@@ -1,0 +1,101 @@
+name: Package for OpenSUSE Build Service
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to release
+        required: false
+        default: main
+        type: string
+      release_message:
+        description: Optional changelog text override
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: obs-release
+  cancel-in-progress: false
+
+jobs:
+  build-debian-src:
+    uses: ./.github/workflows/build_debian_src.yml
+    secrets: inherit
+
+  package-obs:
+    # Fork-gating: Only run in the main repo
+    if: github.repository_owner == 'mPWRD-OS'
+    runs-on: ubuntu-24.04
+    needs: build-debian-src
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          path: libnymea-networkmanager
+
+      - name: Install OpenSUSE Build Service deps
+        shell: bash
+        run: |
+          echo 'deb http://download.opensuse.org/repositories/openSUSE:/Tools/xUbuntu_24.04/ /' | sudo tee /etc/apt/sources.list.d/openSUSE:Tools.list
+          curl -fsSL https://download.opensuse.org/repositories/openSUSE:Tools/xUbuntu_24.04/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/openSUSE_Tools.gpg > /dev/null
+          sudo apt-get update -y --fix-missing
+          sudo apt-get install -y osc
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: libnymea-networkmanager-src
+          merge-multiple: true
+
+      - name: Display structure of downloaded files
+        run: ls -lah
+
+      - name: Configure osc
+        env:
+          OBS_USERNAME: mPWRD
+        run: |
+          # Setup OpenSUSE Build Service credentials
+          mkdir -p ~/.config/osc
+          echo "[general]" > ~/.config/osc/oscrc
+          echo "apiurl=https://api.opensuse.org" >> ~/.config/osc/oscrc
+          echo "[https://api.opensuse.org]" >> ~/.config/osc/oscrc
+          echo "user=${{ env.OBS_USERNAME }}" >> ~/.config/osc/oscrc
+          echo "pass=${{ secrets.OBS_PASSWORD }}" >> ~/.config/osc/oscrc
+          echo "credentials_mgr_class=osc.credentials.PlaintextConfigFileCredentialsManager" >> ~/.config/osc/oscrc
+          # Create a temporary directory for osc checkout
+          mkdir -p osc
+
+      # Intentionally fail if credentials are invalid
+      # Update secrets if this returns `401`
+      - name: Verify OBS authentication
+        run: osc token
+
+      - name: Upload package to OBS
+        shell: bash
+        working-directory: osc
+        env:
+          OBS_PROJECT: home:mPWRD:OS
+          OBS_PACKAGE: libnymea-networkmanager
+        run: |
+          # Initialize the package in the current directory
+          osc checkout --output-dir . $OBS_PROJECT $OBS_PACKAGE
+
+          # Remove the existing package files
+          rm -rf *.dsc *.tar.xz
+
+          # Copy new package files to the directory
+          cp $GITHUB_WORKSPACE/*.dsc .
+          cp $GITHUB_WORKSPACE/*.tar.xz .
+
+          # Add/Remove the files
+          osc addremove
+
+          # Commit changes and push to OpenSUSE Build Service
+          osc commit -m "GitHub Actions: Update package from GitHub Actions run"

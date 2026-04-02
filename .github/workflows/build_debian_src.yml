@@ -1,0 +1,39 @@
+name: Build Debian Source Package
+
+on:
+  workflow_call:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-debian-src:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          path: libnymea-networkmanager
+
+      - name: Install deps
+        shell: bash
+        working-directory: libnymea-networkmanager
+        run: |
+          sudo apt-get update -y --fix-missing
+          sudo apt-get install -y software-properties-common build-essential devscripts equivs
+          sudo mk-build-deps --install --remove --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' debian/control
+
+      - name: Package debian source
+        working-directory: libnymea-networkmanager
+        run: debuild -S -nc -us -uc
+
+      - name: Store binaries as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libnymea-networkmanager-src
+          overwrite: true
+          path: |
+            libnymea-networkmanager_*
